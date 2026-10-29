@@ -5,9 +5,12 @@ import hmac
 import base64
 import hashlib
 import secrets
+import asyncio
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from contextlib import asynccontextmanager
 
 import jwt
 import psycopg
@@ -32,7 +35,26 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET est absent du fichier .env")
 
-app = FastAPI(title="DjessouNet API", version="3.0")
+# --- FONCTION KEEP-ALIVE ---
+# Ceci ping le serveur toutes les 2 minutes pour l'empêcher de s'endormir
+async def keep_awake():
+    url = "https://djessounet.onrender.com/api/status"
+    while True:
+        await asyncio.sleep(120) # Attend 2 minutes
+        try:
+            urllib.request.urlopen(url, timeout=10)
+        except Exception:
+            pass # Si ça échoue (ex: coupure), on ignore pour ne pas crasher
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Démarre la tâche en arrière-plan au lancement du serveur
+    task = asyncio.create_task(keep_awake())
+    yield
+    # Arrête la tâche à la fermeture
+    task.cancel()
+
+app = FastAPI(title="DjessouNet API", version="3.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -261,7 +283,6 @@ def update_my_profile(data: ProfileUpdateRequest, current_user: dict = Depends(g
             if not user:
                 raise HTTPException(status_code=404, detail="Compte introuvable.")
             
-            # Garder l'ancienne valeur si la nouvelle est None
             nom = data.nom.strip() if data.nom is not None else user[0]
             prenom = data.prenom.strip() if data.prenom is not None else user[1]
             classe = data.classe.strip() if data.classe is not None else user[2]
@@ -457,6 +478,30 @@ def create_feedback(data: FeedbackRequest, current_user: dict = Depends(get_curr
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute("INSERT INTO feedbacks (user_id, type, message, status, created_at) VALUES (%s, %s, %s, 'new', NOW()) RETURNING id", (current_user["user_id"], data.type, data.message.strip()))
     return {"status": "ok"}
+
+# --- NOUVELLE ROUTE AJOUTÉE ICI POUR LE MUR DES AVIS ---
+@app.get("/api/feedback")
+def get_feedback_wall():
+    try:
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT f.id, f.type, f.message, f.created_at, u.id, u.nom, u.prenom, u.classe
+                FROM feedbacks f
+                JOIN users u ON u.id = f.user_id
+                ORDER BY f.created_at DESC
+            """)
+            rows = cur.fetchall()
+        return [
+            {
+                "id": str(r[0]), "type": r[1], "message": r[2], "created_at": r[3],
+                "user_id": str(r[4]), "nom": r[5], "prenom": r[6], "classe": r[7]
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print("GET /api/feedback:", repr(exc))
+        raise HTTPException(status_code=503, detail="Impossible de charger les avis.")
+
 
 # ============================================================
 # BACK-OFFICE ADMINISTRATEUR
