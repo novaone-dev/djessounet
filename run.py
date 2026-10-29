@@ -335,6 +335,7 @@ def create_post(data: PostRequest, current_user: dict = Depends(get_current_user
         row = cur.fetchone()
     return {"status": "ok", "post": {"id": str(row[0]), "content": row[1], "image_url": row[2], "created_at": row[3], "likes": 0, "author_id": str(row[4])}}
 
+
 @app.get("/api/posts")
 def get_posts(current_user: Optional[dict] = Depends(get_optional_user)):
     user_id = current_user["user_id"] if current_user else None
@@ -343,7 +344,15 @@ def get_posts(current_user: Optional[dict] = Depends(get_optional_user)):
             SELECT p.id, p.content, p.image_url, p.created_at, COALESCE(l.like_count, 0) AS likes, p.author_id,
                    TRIM(CONCAT(u.prenom, ' ', u.nom)) AS author_name, u.classe AS author_class,
                    u.relationship_status AS author_relationship_status, u.avatar_url AS author_avatar_url,
-                   COALESCE((SELECT json_agg(json_build_object('id', c.id, 'content', c.content, 'created_at', c.created_at, 'user_id', c.user_id, 'author_name', TRIM(CONCAT(cu.prenom, ' ', cu.nom)), 'avatar_url', cu.avatar_url) ORDER BY c.created_at ASC) FROM comments c JOIN users cu ON cu.id = c.user_id WHERE c.post_id = p.id), '[]'::json) AS comments,
+                   COALESCE((
+                       SELECT json_agg(json_build_object(
+                           'id', c.id, 'content', c.content, 'created_at', c.created_at, 
+                           'user_id', c.user_id, 'author_name', TRIM(CONCAT(cu.prenom, ' ', cu.nom)), 
+                           'avatar_url', cu.avatar_url, 'author_class', cu.classe, 
+                           'author_relationship_status', cu.relationship_status
+                       ) ORDER BY c.created_at ASC) 
+                       FROM comments c JOIN users cu ON cu.id = c.user_id WHERE c.post_id = p.id
+                   ), '[]'::json) AS comments,
                    EXISTS (SELECT 1 FROM post_likes mine WHERE mine.post_id = p.id AND mine.user_id = %s) AS liked_by_me,
                    EXISTS (SELECT 1 FROM reports r WHERE r.post_id = p.id AND r.reporter_id = %s) AS reported_by_me
             FROM posts p JOIN users u ON u.id = p.author_id
@@ -356,6 +365,7 @@ def get_posts(current_user: Optional[dict] = Depends(get_optional_user)):
         "author_name": r[6] or "Élève", "author_class": r[7] or "", "author_relationship_status": r[8] or "", "author_avatar_url": r[9], "comments": r[10] or [],
         "liked_by_me": bool(r[11]), "reported_by_me": bool(r[12]),
     } for r in rows]
+
 
 @app.post("/api/posts/{post_id}/comment", status_code=201)
 def create_comment(post_id: str, data: CommentRequest, current_user: dict = Depends(get_current_user)):
@@ -463,11 +473,13 @@ def admin_stats(_: bool = Depends(require_admin)):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM users")
         users_total = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= NOW() - INTERVAL '5 minutes'")
+        users_online = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM posts")
         posts_total = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM reports WHERE COALESCE(status, 'pending') IN ('pending', 'new')")
         pending_reports = cur.fetchone()[0]
-    return {"users_total": users_total, "users_online": 0, "posts_total": posts_total, "pending_reports": pending_reports}
+    return {"users_total": users_total, "users_online": users_online, "posts_total": posts_total, "pending_reports": pending_reports}
 
 @app.get("/api/admin/users")
 def admin_list_users(_: bool = Depends(require_admin)):
