@@ -454,14 +454,25 @@ def get_pokes_count(user_id: str):
 @app.get("/api/notifications")
 def get_notifications(current_user: dict = Depends(get_current_user)):
     with get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT p.id, p.sender_id, u.prenom, u.nom, p.created_at FROM pokes p JOIN users u ON u.id = p.sender_id WHERE p.receiver_id = %s AND p.is_read = FALSE ORDER BY p.created_at DESC", (current_user["user_id"],))
-        poke_rows = cur.fetchall()
-        cur.execute("SELECT n.id, n.sender_id, u.prenom, u.nom, n.created_at, n.type, n.post_id FROM notifications n JOIN users u ON u.id = n.sender_id WHERE n.recipient_id = %s AND n.is_read = FALSE ORDER BY n.created_at DESC", (current_user["user_id"],))
-        other_rows = cur.fetchall()
+        # On ne lit QUE dans la table notifications maintenant (fini les doublons)
+        cur.execute("""
+            SELECT n.id, n.sender_id, u.prenom, u.nom, n.created_at, n.type, n.post_id 
+            FROM notifications n 
+            JOIN users u ON u.id = n.sender_id 
+            WHERE n.recipient_id = %s AND n.is_read = FALSE 
+            ORDER BY n.created_at DESC
+        """, (current_user["user_id"],))
+        rows = cur.fetchall()
     
-    result = [{"id": str(r[0]), "sender_id": str(r[1]), "sender_name": " ".join(x for x in [r[2], r[3]] if x), "created_at": r[4], "type": "poke", "post_id": None} for r in poke_rows]
-    result.extend({"id": str(r[0]), "sender_id": str(r[1]), "sender_name": " ".join(x for x in [r[2], r[3]] if x), "created_at": r[4], "type": r[5], "post_id": str(r[6]) if r[6] is not None else None} for r in other_rows)
-    result.sort(key=lambda item: item["created_at"].isoformat() if item["created_at"] else "", reverse=True)
+    result = [{
+        "id": str(r[0]), 
+        "sender_id": str(r[1]), 
+        "sender_name": " ".join(x for x in [r[2], r[3]] if x), 
+        "created_at": r[4], 
+        "type": r[5], 
+        "post_id": str(r[6]) if r[6] is not None else None
+    } for r in rows]
+    
     return result
 
 @app.post("/api/notifications/read")
