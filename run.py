@@ -200,7 +200,7 @@ def require_admin(x_admin_password: Optional[str] = Header(default=None, alias="
 
 # -------------------------- État général --------------------------
 
-@app.get("/api/status")
+@app.api_route("/api/status", methods=["GET", "HEAD"])
 def api_status():
     try:
         with get_connection() as conn, conn.cursor() as cur:
