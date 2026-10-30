@@ -58,8 +58,8 @@ app = FastAPI(title="DjessouNet API", version="3.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=["*"],  # Autorise toutes les origines (y compris Live Server)
+    allow_credentials=False, # Doit être False si allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
