@@ -614,3 +614,42 @@ def admin_delete_post(post_id: str, _: bool = Depends(require_admin)):
         cur.execute("DELETE FROM reports WHERE post_id = %s", (post_id,))
         cur.execute("DELETE FROM posts WHERE id = %s", (post_id,))
     return {"status": "ok"}
+
+    # --- GESTION DES SIGNALEMENTS ---
+@app.get("/api/admin/reports")
+def admin_list_reports(_: bool = Depends(require_admin)):
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT r.id, r.post_id, r.reason, r.created_at, 
+                   p.content, p.image_url, 
+                   TRIM(CONCAT(u.prenom, ' ', u.nom)) as author_name, u.classe as author_class,
+                   TRIM(CONCAT(ru.prenom, ' ', ru.nom)) as reporter_name
+            FROM reports r
+            LEFT JOIN posts p ON p.id = r.post_id
+            LEFT JOIN users u ON u.id = p.author_id
+            LEFT JOIN users ru ON ru.id = r.reporter_id
+            WHERE r.status = 'pending'
+            ORDER BY r.created_at DESC
+        """)
+        rows = cur.fetchall()
+    return [{
+        "id": str(r[0]), "post_id": str(r[1]), "reason": r[2], "created_at": r[3],
+        "content": r[4] or "", "image_url": r[5],
+        "author_name": r[6] or "Inconnu", "author_class": r[7] or "",
+        "reporter_name": r[8] or "Inconnu"
+    } for r in rows]
+
+@app.put("/api/admin/reports/{report_id}/ignore")
+def admin_ignore_report(report_id: str, _: bool = Depends(require_admin)):
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE reports SET status = 'ignored' WHERE id = %s", (report_id,))
+    return {"status": "ok"}
+
+# --- MODIFICATION D'UN TICKET (Utilisé / Libre) ---
+@app.put("/api/admin/tickets/{ticket_id}")
+def admin_toggle_ticket(ticket_id: str, _: bool = Depends(require_admin)):
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE tickets SET is_used = NOT is_used WHERE code = %s RETURNING is_used", (ticket_id,))
+        row = cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Ticket introuvable.")
+    return {"status": "ok", "is_used": row[0]}
