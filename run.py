@@ -136,7 +136,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     ticket: Optional[str] = None
 
-       @field_validator('email')
+    @field_validator('email')
     @classmethod
     def check_gmail(cls, v: str):
         if not v.lower().endswith('@gmail.com'):
