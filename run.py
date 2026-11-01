@@ -1,4 +1,4 @@
-"""Backend FastAPI de DjessouNet : authentification, posts, likes, pokes, notifications, avis et admin."""
+"""Backend FastAPI de DjessouNet"""
 
 import os
 import hmac
@@ -19,7 +19,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -35,31 +35,27 @@ if not DATABASE_URL:
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET est absent du fichier .env")
 
-# --- FONCTION KEEP-ALIVE ---
-# Ceci ping le serveur toutes les 2 minutes pour l'empêcher de s'endormir
 async def keep_awake():
     url = "https://djessounet.onrender.com/api/status"
     while True:
-        await asyncio.sleep(120) # Attend 2 minutes
+        await asyncio.sleep(120)
         try:
             urllib.request.urlopen(url, timeout=10)
         except Exception:
-            pass # Si ça échoue (ex: coupure), on ignore pour ne pas crasher
+            pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Démarre la tâche en arrière-plan au lancement du serveur
     task = asyncio.create_task(keep_awake())
     yield
-    # Arrête la tâche à la fermeture
     task.cancel()
 
-app = FastAPI(title="DjessouNet API", version="3.1", lifespan=lifespan)
+app = FastAPI(title="DjessouNet API", version="3.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Autorise toutes les origines (y compris Live Server)
-    allow_credentials=False, # Doit être False si allow_origins=["*"]
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -69,7 +65,7 @@ async def unexpected_error_handler(request: Request, exc: Exception):
     print(f"Erreur serveur sur {request.method} {request.url.path}: {exc!r}")
     return JSONResponse(
         status_code=500,
-        content={"detail": "Le serveur est momentanément indisponible. Réessaie dans quelques instants."},
+        content={"detail": "Le serveur est momentanément indisponible."},
     )
 
 required_bearer = HTTPBearer()
@@ -77,8 +73,6 @@ optional_bearer = HTTPBearer(auto_error=False)
 
 def get_connection():
     return psycopg.connect(DATABASE_URL, connect_timeout=15)
-
-# -------------------------- Mot de passe et JWT --------------------------
 
 def hash_password(password: str) -> str:
     iterations = 600_000
@@ -117,9 +111,9 @@ def decode_token(token: str) -> dict:
             raise HTTPException(status_code=401, detail="Token invalide.")
         return payload
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Session expirée. Connecte-toi à nouveau.")
+        raise HTTPException(status_code=401, detail="Session expirée.")
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token invalide. Connecte-toi à nouveau.")
+        raise HTTPException(status_code=401, detail="Token invalide.")
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(required_bearer)):
     payload = decode_token(credentials.credentials)
@@ -134,15 +128,20 @@ def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depe
     except HTTPException:
         return None
 
-# -------------------------- Modèles JSON --------------------------
-
 class RegisterRequest(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
     prenom: str = Field(min_length=1, max_length=100)
     classe: str = Field(min_length=1, max_length=50)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
-    ticket: str = Field(min_length=1, max_length=100)
+    ticket: Optional[str] = None
+
+       @field_validator('email')
+    @classmethod
+    def check_gmail(cls, v: str):
+        if not v.lower().endswith('@gmail.com'):
+            raise ValueError('Seules les adresses @gmail.com sont acceptées.')
+        return v.lower()
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -157,7 +156,7 @@ class FeedbackRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
 
 class ReportRequest(BaseModel):
-    reason: str = Field(default="À examiner par la modération", min_length=1, max_length=500)
+    reason: str = Field(default="À examiner", min_length=1, max_length=500)
 
 class ProfileUpdateRequest(BaseModel):
     nom: Optional[str] = Field(default=None, max_length=100)
@@ -172,8 +171,6 @@ class ProfileUpdateRequest(BaseModel):
 
 class CommentRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
-
-# -------------------------- Modèles Admin --------------------------
 
 class AdminLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
@@ -198,8 +195,6 @@ def require_admin(x_admin_password: Optional[str] = Header(default=None, alias="
         raise HTTPException(status_code=401, detail="Mot de passe administrateur invalide.")
     return True
 
-# -------------------------- État général --------------------------
-
 @app.api_route("/api/status", methods=["GET", "HEAD"])
 def api_status():
     try:
@@ -209,29 +204,32 @@ def api_status():
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Impossible de joindre la base de données.")
 
-# -------------------------- Auth --------------------------
-
 @app.post("/api/register", status_code=201)
 def register(data: RegisterRequest):
     email = str(data.email).strip().lower()
-    ticket = data.ticket.strip()
+    ticket = data.ticket.strip() if data.ticket else None
+
     try:
         with get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT is_used FROM tickets WHERE code = %s FOR UPDATE", (ticket,))
-            ticket_row = cur.fetchone()
-            if not ticket_row or ticket_row[0]:
-                raise HTTPException(status_code=400, detail="Ticket invalide ou déjà utilisé.")
-
+            if ticket:
+                cur.execute("SELECT is_used FROM tickets WHERE code = %s FOR UPDATE", (ticket,))
+                ticket_row = cur.fetchone()
+                if not ticket_row or ticket_row[0]:
+                    raise HTTPException(status_code=400, detail="Ticket invalide.")
+            
             cur.execute("SELECT id FROM users WHERE email = %s", (email,))
             if cur.fetchone():
-                raise HTTPException(status_code=409, detail="Cette adresse e-mail est déjà utilisée.")
+                raise HTTPException(status_code=409, detail="Email déjà utilisé.")
 
             cur.execute(
                 "INSERT INTO users (nom, prenom, classe, email, password, ticket_code) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                 (data.nom.strip(), data.prenom.strip(), data.classe.strip(), email, hash_password(data.password), ticket),
             )
             user_id = cur.fetchone()[0]
-            cur.execute("UPDATE tickets SET is_used = TRUE WHERE code = %s", (ticket,))
+            
+            if ticket:
+                cur.execute("UPDATE tickets SET is_used = TRUE WHERE code = %s", (ticket,))
+                
         return {"status": "ok", "message": "Inscription réussie.", "user_id": str(user_id)}
     except HTTPException:
         raise
@@ -257,8 +255,6 @@ def login(data: LoginRequest):
         "token": create_access_token(user[0]),
         "user": {"id": str(user[0]), "nom": user[1], "prenom": user[2], "classe": user[3], "avatar_url": user[5]},
     }
-
-# -------------------------- Profil --------------------------
 
 @app.get("/api/me")
 def me(current_user: dict = Depends(get_current_user)):
@@ -343,8 +339,6 @@ def get_user_received_likes_count(user_id: str):
         count = cur.fetchone()[0]
     return {"user_id": user_id, "count": count}
 
-# -------------------------- Publications --------------------------
-
 @app.post("/api/posts", status_code=201)
 def create_post(data: PostRequest, current_user: dict = Depends(get_current_user)):
     content = data.content.strip()
@@ -355,7 +349,6 @@ def create_post(data: PostRequest, current_user: dict = Depends(get_current_user
         cur.execute("INSERT INTO posts (author_id, content, image_url, likes, created_at) VALUES (%s, %s, %s, 0, NOW()) RETURNING id, content, image_url, created_at, author_id", (current_user["user_id"], content, image_url))
         row = cur.fetchone()
     return {"status": "ok", "post": {"id": str(row[0]), "content": row[1], "image_url": row[2], "created_at": row[3], "likes": 0, "author_id": str(row[4])}}
-
 
 @app.get("/api/posts")
 def get_posts(current_user: Optional[dict] = Depends(get_optional_user)):
@@ -386,7 +379,6 @@ def get_posts(current_user: Optional[dict] = Depends(get_optional_user)):
         "author_name": r[6] or "Élève", "author_class": r[7] or "", "author_relationship_status": r[8] or "", "author_avatar_url": r[9], "comments": r[10] or [],
         "liked_by_me": bool(r[11]), "reported_by_me": bool(r[12]),
     } for r in rows]
-
 
 @app.post("/api/posts/{post_id}/comment", status_code=201)
 def create_comment(post_id: str, data: CommentRequest, current_user: dict = Depends(get_current_user)):
@@ -431,8 +423,6 @@ def report_post(post_id: str, data: ReportRequest, current_user: dict = Depends(
         cur.execute("INSERT INTO reports (post_id, reporter_id, reason, status, created_at) VALUES (%s, %s, %s, 'pending', NOW()) ON CONFLICT DO NOTHING", (post_id, current_user["user_id"], data.reason.strip()))
     return {"status": "ok", "message": "Signalement enregistré."}
 
-# -------------------------- Pokes & Notifications --------------------------
-
 @app.post("/api/poke/{receiver_id}", status_code=201)
 def create_poke(receiver_id: str, current_user: dict = Depends(get_current_user)):
     sender_id = current_user["user_id"]
@@ -454,7 +444,6 @@ def get_pokes_count(user_id: str):
 @app.get("/api/notifications")
 def get_notifications(current_user: dict = Depends(get_current_user)):
     with get_connection() as conn, conn.cursor() as cur:
-        # On ne lit QUE dans la table notifications maintenant (fini les doublons)
         cur.execute("""
             SELECT n.id, n.sender_id, u.prenom, u.nom, n.created_at, n.type, n.post_id 
             FROM notifications n 
@@ -463,17 +452,10 @@ def get_notifications(current_user: dict = Depends(get_current_user)):
             ORDER BY n.created_at DESC
         """, (current_user["user_id"],))
         rows = cur.fetchall()
-    
-    result = [{
-        "id": str(r[0]), 
-        "sender_id": str(r[1]), 
-        "sender_name": " ".join(x for x in [r[2], r[3]] if x), 
-        "created_at": r[4], 
-        "type": r[5], 
-        "post_id": str(r[6]) if r[6] is not None else None
+    return [{
+        "id": str(r[0]), "sender_id": str(r[1]), "sender_name": " ".join(x for x in [r[2], r[3]] if x), 
+        "created_at": r[4], "type": r[5], "post_id": str(r[6]) if r[6] is not None else None
     } for r in rows]
-    
-    return result
 
 @app.post("/api/notifications/read")
 def mark_notifications_read(current_user: dict = Depends(get_current_user)):
@@ -482,41 +464,24 @@ def mark_notifications_read(current_user: dict = Depends(get_current_user)):
         cur.execute("UPDATE notifications SET is_read = TRUE WHERE recipient_id = %s AND is_read = FALSE", (current_user["user_id"],))
     return {"status": "ok"}
 
-# -------------------------- Avis --------------------------
-
 @app.post("/api/feedback", status_code=201)
 def create_feedback(data: FeedbackRequest, current_user: dict = Depends(get_current_user)):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute("INSERT INTO feedbacks (user_id, type, message, status, created_at) VALUES (%s, %s, %s, 'new', NOW()) RETURNING id", (current_user["user_id"], data.type, data.message.strip()))
     return {"status": "ok"}
 
-# --- NOUVELLE ROUTE AJOUTÉE ICI POUR LE MUR DES AVIS ---
 @app.get("/api/feedback")
 def get_feedback_wall():
     try:
         with get_connection() as conn, conn.cursor() as cur:
             cur.execute("""
                 SELECT f.id, f.type, f.message, f.created_at, u.id, u.nom, u.prenom, u.classe
-                FROM feedbacks f
-                JOIN users u ON u.id = f.user_id
-                ORDER BY f.created_at DESC
+                FROM feedbacks f JOIN users u ON u.id = f.user_id ORDER BY f.created_at DESC
             """)
             rows = cur.fetchall()
-        return [
-            {
-                "id": str(r[0]), "type": r[1], "message": r[2], "created_at": r[3],
-                "user_id": str(r[4]), "nom": r[5], "prenom": r[6], "classe": r[7]
-            }
-            for r in rows
-        ]
+        return [{"id": str(r[0]), "type": r[1], "message": r[2], "created_at": r[3], "user_id": str(r[4]), "nom": r[5], "prenom": r[6], "classe": r[7]} for r in rows]
     except Exception as exc:
-        print("GET /api/feedback:", repr(exc))
         raise HTTPException(status_code=503, detail="Impossible de charger les avis.")
-
-
-# ============================================================
-# BACK-OFFICE ADMINISTRATEUR
-# ============================================================
 
 @app.post("/api/admin/login")
 def admin_login(data: AdminLoginRequest):
@@ -531,11 +496,13 @@ def admin_stats(_: bool = Depends(require_admin)):
         users_total = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= NOW() - INTERVAL '5 minutes'")
         users_online = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM users WHERE last_seen >= date_trunc('day', NOW())")
+        users_today = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM posts")
         posts_total = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM reports WHERE COALESCE(status, 'pending') IN ('pending', 'new')")
         pending_reports = cur.fetchone()[0]
-    return {"users_total": users_total, "users_online": users_online, "posts_total": posts_total, "pending_reports": pending_reports}
+    return {"users_total": users_total, "users_online": users_online, "users_today": users_today, "posts_total": posts_total, "pending_reports": pending_reports}
 
 @app.get("/api/admin/users")
 def admin_list_users(_: bool = Depends(require_admin)):
@@ -615,29 +582,19 @@ def admin_delete_post(post_id: str, _: bool = Depends(require_admin)):
         cur.execute("DELETE FROM posts WHERE id = %s", (post_id,))
     return {"status": "ok"}
 
-    # --- GESTION DES SIGNALEMENTS ---
 @app.get("/api/admin/reports")
 def admin_list_reports(_: bool = Depends(require_admin)):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute("""
-            SELECT r.id, r.post_id, r.reason, r.created_at, 
-                   p.content, p.image_url, 
+            SELECT r.id, r.post_id, r.reason, r.created_at, p.content, p.image_url, 
                    TRIM(CONCAT(u.prenom, ' ', u.nom)) as author_name, u.classe as author_class,
                    TRIM(CONCAT(ru.prenom, ' ', ru.nom)) as reporter_name
-            FROM reports r
-            LEFT JOIN posts p ON p.id = r.post_id
-            LEFT JOIN users u ON u.id = p.author_id
-            LEFT JOIN users ru ON ru.id = r.reporter_id
-            WHERE r.status = 'pending'
-            ORDER BY r.created_at DESC
+            FROM reports r LEFT JOIN posts p ON p.id = r.post_id
+            LEFT JOIN users u ON u.id = p.author_id LEFT JOIN users ru ON ru.id = r.reporter_id
+            WHERE r.status = 'pending' ORDER BY r.created_at DESC
         """)
         rows = cur.fetchall()
-    return [{
-        "id": str(r[0]), "post_id": str(r[1]), "reason": r[2], "created_at": r[3],
-        "content": r[4] or "", "image_url": r[5],
-        "author_name": r[6] or "Inconnu", "author_class": r[7] or "",
-        "reporter_name": r[8] or "Inconnu"
-    } for r in rows]
+    return [{"id": str(r[0]), "post_id": str(r[1]), "reason": r[2], "created_at": r[3], "content": r[4] or "", "image_url": r[5], "author_name": r[6] or "Inconnu", "author_class": r[7] or "", "reporter_name": r[8] or "Inconnu"} for r in rows]
 
 @app.put("/api/admin/reports/{report_id}/ignore")
 def admin_ignore_report(report_id: str, _: bool = Depends(require_admin)):
@@ -645,7 +602,6 @@ def admin_ignore_report(report_id: str, _: bool = Depends(require_admin)):
         cur.execute("UPDATE reports SET status = 'ignored' WHERE id = %s", (report_id,))
     return {"status": "ok"}
 
-# --- MODIFICATION D'UN TICKET (Utilisé / Libre) ---
 @app.put("/api/admin/tickets/{ticket_id}")
 def admin_toggle_ticket(ticket_id: str, _: bool = Depends(require_admin)):
     with get_connection() as conn, conn.cursor() as cur:
