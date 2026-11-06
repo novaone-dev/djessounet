@@ -450,6 +450,17 @@ def list_posts(
         "is_liked": bool(r[13]), "is_saved": bool(r[14]), "is_subscribed": bool(r[15]),
     } for r in rows]
 
+
+@app.post("/api/posts", status_code=201)
+def create_post(data: CreatePostRequest, current_user: dict = Depends(get_current_user)):
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO posts (user_id, media_url, media_type, title, description) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+            (current_user["user_id"], data.media_url, data.media_type, data.title, data.description),
+        )
+        row = cur.fetchone()
+    return {"status": "ok", "post_id": str(row[0]), "created_at": row[1]}
 @app.post("/api/posts/{post_id}/like")
 def like_post(post_id: str, current_user: dict = Depends(get_current_user)):
     uid = current_user["user_id"]
