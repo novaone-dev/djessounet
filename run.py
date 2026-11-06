@@ -401,6 +401,7 @@ def list_posts(
     user_id: Optional[str] = Query(default=None),
     media_type: Optional[str] = Query(default=None),
     saved_by: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None),
     current_user: Optional[dict] = Depends(get_optional_user),
 ):
     uid = current_user["user_id"] if current_user else None
@@ -416,6 +417,9 @@ def list_posts(
     if saved_by:
         where.append("p.id IN (SELECT post_id FROM post_saves WHERE user_id = %s)")
         where_params.append(saved_by)
+    if q:
+        where.append("(p.title ILIKE %s OR p.description ILIKE %s)")
+        where_params.extend([f"%{q}%", f"%{q}%"])
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
