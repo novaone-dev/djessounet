@@ -1,4 +1,4 @@
-"""Backend FastAPI de DjessouNet - Version Vidéo/Profil/Notifications"""
+"""Backend FastAPI de DjessouNet - Version Finale"""
 
 import os
 import hmac
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
 
-app = FastAPI(title="DjessouNet API", version="5.0", lifespan=lifespan)
+app = FastAPI(title="DjessouNet API", version="6.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -130,10 +130,7 @@ def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depe
     except HTTPException:
         return None
 
-# -------------------------- NOTIFICATIONS : helper --------------------------
-
 def _create_notification(cur, recipient_id, sender_id, notif_type: str, post_id=None) -> None:
-    """Insère une notification, sauf si l'utilisateur agit sur son propre contenu."""
     if str(recipient_id) == str(sender_id):
         return
     cur.execute(
@@ -395,6 +392,18 @@ def get_user_profile(
 
 # -------------------------- POSTS + NOTIFICATIONS --------------------------
 
+# AJOUT DE LA ROUTE DE CRÉATION DE POST (CORRIGE LE 405)
+@app.post("/api/posts", status_code=201)
+def create_post(data: CreatePostRequest, current_user: dict = Depends(get_current_user)):
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO posts (user_id, media_url, media_type, title, description) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+            (current_user["user_id"], data.media_url, data.media_type, data.title, data.description),
+        )
+        row = cur.fetchone()
+    return {"status": "ok", "post_id": str(row[0]), "created_at": row[1]}
+
 @app.get("/api/posts")
 def list_posts(
     limit: int = Query(default=30, ge=1, le=100),
@@ -450,17 +459,6 @@ def list_posts(
         "is_liked": bool(r[13]), "is_saved": bool(r[14]), "is_subscribed": bool(r[15]),
     } for r in rows]
 
-
-@app.post("/api/posts", status_code=201)
-def create_post(data: CreatePostRequest, current_user: dict = Depends(get_current_user)):
-    with get_connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO posts (user_id, media_url, media_type, title, description) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
-            (current_user["user_id"], data.media_url, data.media_type, data.title, data.description),
-        )
-        row = cur.fetchone()
-    return {"status": "ok", "post_id": str(row[0]), "created_at": row[1]}
 @app.post("/api/posts/{post_id}/like")
 def like_post(post_id: str, current_user: dict = Depends(get_current_user)):
     uid = current_user["user_id"]
@@ -675,7 +673,6 @@ def admin_delete_user(user_id: str, _: bool = Depends(require_admin)):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM notifications WHERE recipient_id = %s OR sender_id = %s", (user_id, user_id))
         cur.execute("DELETE FROM subscriptions WHERE subscriber_id = %s OR subscribed_to_id = %s", (user_id, user_id))
-        # Les posts / likes / saves / comments sont supprimés par cascade
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
     return {"status": "ok"}
 
