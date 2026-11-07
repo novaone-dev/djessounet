@@ -570,7 +570,7 @@ def get_notifications(current_user: dict = Depends(get_current_user)):
     with get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT n.id, n.sender_id, u.prenom, u.nom, n.created_at, n.type, n.post_id
+            SELECT n.id, n.sender_id, u.prenom, u.nom, u.avatar_url, n.created_at, n.type, n.post_id
             FROM notifications n
             JOIN users u ON u.id = n.sender_id
             WHERE n.recipient_id = %s AND n.is_read = FALSE
@@ -582,8 +582,9 @@ def get_notifications(current_user: dict = Depends(get_current_user)):
     return [{
         "id": str(r[0]), "sender_id": str(r[1]),
         "sender_name": " ".join(x for x in [r[2], r[3]] if x),
-        "created_at": r[4], "type": r[5],
-        "post_id": str(r[6]) if r[6] is not None else None,
+        "avatar_url": r[4],
+        "created_at": r[5], "type": r[6],
+        "post_id": str(r[7]) if r[7] is not None else None,
     } for r in rows]
 
 @app.post("/api/notifications/read")
